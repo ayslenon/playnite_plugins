@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Text;
-using System.Windows; // Necessário para o MessageBoxImage
+using System.Threading.Tasks;
+using System.Windows;
 using Playnite.SDK;
 using Playnite.SDK.Data;
 using Playnite.SDK.Models;
@@ -12,6 +14,27 @@ using Playnite.SDK.Plugins;
 
 namespace SyncServerPlaynite
 {
+    // Wrapper exigido pela sua API Backend para o envio
+    public class SyncPayload
+    {
+        public List<GameDTO> games { get; set; } = new List<GameDTO>();
+    }
+
+    // Estruturas de resposta retornadas pelo seu servidor
+    public class SyncResponse
+    {
+        public int processed { get; set; }
+        public int skipped { get; set; }
+        public List<SyncResultItem> results { get; set; } = new List<SyncResultItem>();
+    }
+
+    public class SyncResultItem
+    {
+        public string id { get; set; }
+        public string title { get; set; }
+        public string action { get; set; }
+    }
+
     public class GameDTO
     {
         public string Id { get; set; }
@@ -41,7 +64,8 @@ namespace SyncServerPlaynite
         public override Guid Id { get; } = Guid.Parse("a1b2c3d4-e5f6-7890-1234-56789abcdef0");
         
         // URL do Servidor
-        private const string ServerUrl = "http://localhost:5000/api/playnite/sync";
+        private const string ServerUrl = "http://192.168.1.72:8000/api/sync/playnite";
+        private static readonly HttpClient httpClient = new HttpClient();
 
         public SyncServerPlugin(IPlayniteAPI api) : base(api)
         {
@@ -91,7 +115,6 @@ namespace SyncServerPlaynite
             };
         }
 
-        // 3. DIÁLOGO POP-UP (SINTAXE OFICIAL DO PLAYNITE SDK)
         private void ConfirmarEEnviar(List<Game> jogos)
         {
             if (jogos == null || jogos.Count == 0)
@@ -104,7 +127,6 @@ namespace SyncServerPlaynite
             var opNao = new MessageBoxOption("Não (Apenas Metadados)");
             var opCancelar = new MessageBoxOption("Cancelar", true, false);
 
-            // A sobrecarga correta exige: ShowMessage(Mensagem, Título, Ícone, ListaDeOpções)
             var escolha = PlayniteApi.Dialogs.ShowMessage(
                 $"Você está prestes a enviar {jogos.Count} jogo(s) para a Dashboard.\n\n" +
                 "Deseja incluir os PARÂMETROS DE INSTALAÇÃO (Status do HD e diretório)?\n\n" +
@@ -118,15 +140,60 @@ namespace SyncServerPlaynite
             if (escolha == opCancelar || escolha == null) return;
 
             bool incluirInstalacao = (escolha == opSim);
-            ProcessarEnvioBatch(jogos, incluirInstalacao);
+
+            // Dispara o envio assíncrono para não travar a interface do Playnite
+            Task.Run(() => ProcessarEnvioBatchAsync(jogos, incluirInstalacao));
         }
 
-        private void ProcessarEnvioBatch(List<Game> jogos, bool incluirInstalacao)
+        private async Task ProcessarEnvioBatchAsync(List<Game> jogos, bool incluirInstalacao)
         {
-            var dtos = jogos.Select(j => CriarDtoCustomizado(j, incluirInstalacao)).ToList();
-            string jsonArray = Serialization.ToJson(dtos, true);
+            try
+            {
+                var dtos = jogos.Select(j => CriarDtoCustomizado(j, incluirInstalacao)).ToList();
+                
+                var payload = new SyncPayload { games = dtos };
+                string jsonBody = Serialization.ToJson(payload, true);
 
-            ExibirLogTerminal(jsonArray, jogos.Count, incluirInstalacao);
+                // Log em janela CMD (debug local)
+                ExibirLogTerminal(jsonBody, jogos.Count, incluirInstalacao);
+
+                // Envio HTTP POST
+                var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+                HttpResponseMessage response = await httpClient.PostAsync(ServerUrl, content);
+
+                string responseText = await response.Content.ReadAsStringAsync();
+
+                if (response.IsSuccessStatusCode)
+                {
+                    // Faz a leitura da resposta JSON do backend
+                    var syncResult = Serialization.FromJson<SyncResponse>(responseText);
+
+                    string mensagemSucesso = "Sincronização concluída!\n\n" +
+                                             $"• Processados: {syncResult?.processed ?? 0}\n" +
+                                             $"• Pulados: {syncResult?.skipped ?? 0}";
+
+                    PlayniteApi.Dialogs.ShowMessage(
+                        mensagemSucesso, 
+                        "Resultado da Sincronização",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information
+                    );
+                }
+                else
+                {
+                    PlayniteApi.Dialogs.ShowErrorMessage(
+                        $"Erro no servidor (Status {(int)response.StatusCode}):\n{responseText}", 
+                        "Erro de Sincronização"
+                    );
+                }
+            }
+            catch (Exception ex)
+            {
+                PlayniteApi.Dialogs.ShowErrorMessage(
+                    $"Falha de conexão com o servidor:\n{ex.Message}", 
+                    "Erro de Conexão"
+                );
+            }
         }
 
         private GameDTO CriarDtoCustomizado(Game jogo, bool incluirInstalacao)
@@ -139,8 +206,8 @@ namespace SyncServerPlaynite
                 IsInstalled = incluirInstalacao ? (bool?)jogo.IsInstalled : null,
                 Playtime = Convert.ToInt32(jogo.Playtime),
                 Favorite = jogo.Favorite,
-                CoverImage = jogo.CoverImage,
-                BackgroundImage = jogo.BackgroundImage,
+                CoverImage = jogo.CoverImage?.Replace('\\', '/'),
+                BackgroundImage = jogo.BackgroundImage?.Replace('\\', '/'),
                 Hidden = jogo.Hidden,
                 PlayCount = Convert.ToInt32(jogo.PlayCount),
                 Added = jogo.Added?.ToString("yyyy-MM-ddTHH:mm:ssZ"),
