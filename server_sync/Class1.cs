@@ -64,7 +64,7 @@ namespace SyncServerPlaynite
         public override Guid Id { get; } = Guid.Parse("a1b2c3d4-e5f6-7890-1234-56789abcdef0");
         
         // URL do Servidor
-        private const string ServerUrl = "http://192.168.1.72:8000/api/sync/playnite";
+        private const string ServerUrl = "https://localhost:8000/api/sync/playnite";
         private static readonly HttpClient httpClient = new HttpClient();
 
         public SyncServerPlugin(IPlayniteAPI api) : base(api)
@@ -206,8 +206,8 @@ namespace SyncServerPlaynite
                 IsInstalled = incluirInstalacao ? (bool?)jogo.IsInstalled : null,
                 Playtime = Convert.ToInt32(jogo.Playtime),
                 Favorite = jogo.Favorite,
-                CoverImage = jogo.CoverImage?.Replace('\\', '/'),
-                BackgroundImage = jogo.BackgroundImage?.Replace('\\', '/'),
+                CoverImage = CriarLinkRelativoPlaynite(jogo.Id.ToString(), jogo.CoverImage),
+                BackgroundImage = CriarLinkRelativoPlaynite(jogo.Id.ToString(), jogo.BackgroundImage),
                 Hidden = jogo.Hidden,
                 PlayCount = Convert.ToInt32(jogo.PlayCount),
                 Added = jogo.Added?.ToString("yyyy-MM-ddTHH:mm:ssZ"),
@@ -243,6 +243,23 @@ namespace SyncServerPlaynite
             }
 
             return dto;
+        }
+
+        private static string CriarLinkRelativoPlaynite(string playniteId, string caminho)
+        {
+            if (string.IsNullOrWhiteSpace(playniteId) || string.IsNullOrWhiteSpace(caminho))
+                return null;
+
+            string normalizado = caminho.Trim().Replace('\\', '/').TrimEnd('/');
+            int ultimoSeparador = normalizado.LastIndexOf('/');
+            string nomeArquivo = ultimoSeparador >= 0
+                ? normalizado.Substring(ultimoSeparador + 1)
+                : normalizado;
+
+            if (string.IsNullOrWhiteSpace(nomeArquivo) || nomeArquivo == "." || nomeArquivo == "..")
+                return null;
+
+            return $"/api/covers/playnite/{playniteId}/{nomeArquivo}";
         }
 
         private void ExibirLogTerminal(string json, int total, bool comInstalacao)
