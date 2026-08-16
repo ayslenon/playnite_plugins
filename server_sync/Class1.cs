@@ -141,12 +141,31 @@ namespace SyncServerPlaynite
 
             bool incluirInstalacao = (escolha == opSim);
 
+            var opLogDetalhado = new MessageBoxOption("Sim (Exibir JSON)");
+            var opLogSimples = new MessageBoxOption("Não (Log Resumido)");
+            var opCancelarLog = new MessageBoxOption("Cancelar", true, false);
+
+            var escolhaLog = PlayniteApi.Dialogs.ShowMessage(
+                "Deseja exibir o log detalhado do envio?\n\n" +
+                "• [SIM] Exibe no terminal o JSON completo enviado ao servidor.\n" +
+                "• [NÃO] Exibe apenas informações resumidas do batch.",
+                "Nível de Log",
+                MessageBoxImage.Question,
+                new List<MessageBoxOption> { opLogDetalhado, opLogSimples, opCancelarLog }
+            );
+
+            if (escolhaLog == opCancelarLog || escolhaLog == null) return;
+
+            bool logDetalhado = (escolhaLog == opLogDetalhado);
+
             // Dispara o envio assíncrono para não travar a interface do Playnite
-            Task.Run(() => ProcessarEnvioBatchAsync(jogos, incluirInstalacao));
+            Task.Run(() => ProcessarEnvioBatchAsync(jogos, incluirInstalacao, logDetalhado));
         }
 
-        private async Task ProcessarEnvioBatchAsync(List<Game> jogos, bool incluirInstalacao)
+        private async Task ProcessarEnvioBatchAsync(List<Game> jogos, bool incluirInstalacao, bool logDetalhado)
         {
+            string arquivoResultadoTerminal = null;
+
             try
             {
                 var dtos = jogos.Select(j => CriarDtoCustomizado(j, incluirInstalacao)).ToList();
@@ -154,8 +173,10 @@ namespace SyncServerPlaynite
                 var payload = new SyncPayload { games = dtos };
                 string jsonBody = Serialization.ToJson(payload, true);
 
-                // Log em janela CMD (debug local)
-                ExibirLogTerminal(jsonBody, jogos.Count, incluirInstalacao);
+                // Abre o terminal imediatamente. O relatório final será escrito nele
+                // quando a resposta do servidor chegar.
+                arquivoResultadoTerminal = IniciarLogTerminal(
+                    jsonBody, jogos.Count, incluirInstalacao, logDetalhado);
 
                 // Envio HTTP POST
                 var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
@@ -168,12 +189,15 @@ namespace SyncServerPlaynite
                     // Faz a leitura da resposta JSON do backend
                     var syncResult = Serialization.FromJson<SyncResponse>(responseText);
 
-                    string mensagemSucesso = "Sincronização concluída!\n\n" +
-                                             $"• Processados: {syncResult?.processed ?? 0}\n" +
-                                             $"• Pulados: {syncResult?.skipped ?? 0}";
+                    // Relatório completo fica no terminal.
+                    string relatorioTerminal = GerarRelatorioTerminal(syncResult, dtos, responseText, logDetalhado);
+                    File.WriteAllText(arquivoResultadoTerminal, relatorioTerminal, Encoding.UTF8);
+
+                    // Popup do Playnite fica propositalmente curto.
+                    string mensagemSucesso = GerarResumoPopup(syncResult, jogos.Count);
 
                     PlayniteApi.Dialogs.ShowMessage(
-                        mensagemSucesso, 
+                        mensagemSucesso,
                         "Resultado da Sincronização",
                         MessageBoxButton.OK,
                         MessageBoxImage.Information
@@ -181,16 +205,36 @@ namespace SyncServerPlaynite
                 }
                 else
                 {
+                    File.WriteAllText(
+                        arquivoResultadoTerminal,
+                        GerarErroTerminal((int)response.StatusCode, responseText),
+                        Encoding.UTF8);
+
                     PlayniteApi.Dialogs.ShowErrorMessage(
-                        $"Erro no servidor (Status {(int)response.StatusCode}):\n{responseText}", 
+                        $"Erro no servidor (Status {(int)response.StatusCode}):\n{responseText}",
                         "Erro de Sincronização"
                     );
                 }
             }
             catch (Exception ex)
             {
+                if (!string.IsNullOrWhiteSpace(arquivoResultadoTerminal))
+                {
+                    try
+                    {
+                        File.WriteAllText(
+                            arquivoResultadoTerminal,
+                            GerarExcecaoTerminal(ex),
+                            Encoding.UTF8);
+                    }
+                    catch
+                    {
+                        // Se o próprio log falhar, preserva o erro original no popup.
+                    }
+                }
+
                 PlayniteApi.Dialogs.ShowErrorMessage(
-                    $"Falha de conexão com o servidor:\n{ex.Message}", 
+                    $"Falha de conexão com o servidor:\n{ex.Message}",
                     "Erro de Conexão"
                 );
             }
@@ -262,43 +306,258 @@ namespace SyncServerPlaynite
             return $"/api/covers/playnite/{playniteId}/{nomeArquivo}";
         }
 
-        private void ExibirLogTerminal(string json, int total, bool comInstalacao)
+        private string GerarResumoPopup(SyncResponse syncResult, int totalEnviado)
         {
-            string tempBat = Path.Combine(Path.GetTempPath(), "playnite_sync_batch.bat");
-            StringBuilder logCmd = new StringBuilder();
+            int processados = syncResult?.processed ?? 0;
+            int pulados = syncResult?.skipped ?? 0;
 
-            logCmd.AppendLine("@echo off");
-            logCmd.AppendLine("chcp 65001 > nul");
-            logCmd.AppendLine($"title Playnite Sync - Batch ({total} jogos)");
-            logCmd.AppendLine("echo =========================================================");
-            logCmd.AppendLine($"echo  DESTINO: {ServerUrl}");
-            logCmd.AppendLine($"echo  ENVIO EM BATCH - TOTAL: {total} JOGOS");
-            logCmd.AppendLine($"echo  INCLUI STATUS DE INSTALACAO: {comInstalacao}");
-            logCmd.AppendLine("echo =========================================================");
-            logCmd.AppendLine("echo.");
+            return "Sincronização concluída!\n\n" +
+                   $"• Enviados: {totalEnviado}\n" +
+                   $"• Processados: {processados}\n" +
+                   $"• Pulados: {pulados}\n\n" +
+                   "Consulte o terminal para o relatório detalhado.";
+        }
 
-            using (var reader = new StringReader(json))
+        private string GerarRelatorioTerminal(
+            SyncResponse syncResult,
+            List<GameDTO> jogosEnviados,
+            string responseJson,
+            bool logDetalhado)
+        {
+            int processados = syncResult?.processed ?? 0;
+            int puladosBackend = syncResult?.skipped ?? 0;
+            var resultados = syncResult?.results ?? new List<SyncResultItem>();
+            var enviados = jogosEnviados ?? new List<GameDTO>();
+
+            // O backend só devolve em results os jogos que foram processados.
+            // Portanto, os pulados não têm uma action própria: identificamos quais
+            // jogos enviados NÃO aparecem na resposta, comparando pelo ID do Playnite.
+            var idsRetornados = new HashSet<string>(
+                resultados
+                    .Where(r => !string.IsNullOrWhiteSpace(r?.id))
+                    .Select(r => r.id),
+                StringComparer.OrdinalIgnoreCase);
+
+            var jogosPulados = enviados
+                .Where(j => !string.IsNullOrWhiteSpace(j?.Id) && !idsRetornados.Contains(j.Id))
+                .ToList();
+
+            // Se houver algum item processado sem ID na resposta, deixa explícito no log.
+            int resultadosSemId = resultados.Count(r => string.IsNullOrWhiteSpace(r?.id));
+
+            var relatorio = new StringBuilder();
+            relatorio.AppendLine();
+            relatorio.AppendLine("[RESPOSTA RECEBIDA]");
+            relatorio.AppendLine("---------------------------------------------------------");
+            relatorio.AppendLine("HTTP 200 - sincronização concluída.");
+
+            if (logDetalhado)
             {
-                string linha;
-                while ((linha = reader.ReadLine()) != null)
-                {
-                    string linhaEscapada = linha.Replace("^", "^^")
-                                                 .Replace("&", "^&")
-                                                 .Replace("<", "^<")
-                                                 .Replace(">", "^>")
-                                                 .Replace("|", "^|");
+                relatorio.AppendLine();
+                relatorio.AppendLine("[JSON DE RESPOSTA DO SERVIDOR]");
+                relatorio.AppendLine("---------------------------------------------------------");
+                relatorio.AppendLine(responseJson);
+            }
 
-                    logCmd.AppendLine($"echo {linhaEscapada}");
+            relatorio.AppendLine();
+            relatorio.AppendLine("[RELATORIO]");
+            relatorio.AppendLine();
+
+            // No log resumido mostramos só o contador. No detalhado, mostramos
+            // cada item efetivamente retornado pelo backend e sua action.
+            if (logDetalhado)
+            {
+                relatorio.AppendLine($"PROCESSADOS ({resultados.Count})");
+                relatorio.AppendLine("---------------------------------------------------------");
+
+                if (resultados.Count == 0)
+                {
+                    relatorio.AppendLine("(nenhum)");
+                }
+                else
+                {
+                    foreach (var item in resultados)
+                    {
+                        string nome = item?.title ?? item?.id ?? "(sem título)";
+                        string acao = string.IsNullOrWhiteSpace(item?.action)
+                            ? "sem action"
+                            : item.action;
+
+                        relatorio.AppendLine($"• {nome} [{acao}]");
+                    }
+                }
+
+                relatorio.AppendLine();
+            }
+            else
+            {
+                relatorio.AppendLine($"PROCESSADOS: {processados}");
+                relatorio.AppendLine();
+            }
+
+            relatorio.AppendLine($"PULADOS / NAO RETORNADOS ({jogosPulados.Count})");
+            relatorio.AppendLine("---------------------------------------------------------");
+
+            if (jogosPulados.Count == 0)
+            {
+                relatorio.AppendLine("(nenhum identificado pela comparacao de IDs)");
+            }
+            else
+            {
+                foreach (var jogo in jogosPulados)
+                {
+                    string nome = jogo?.Name ?? jogo?.Id ?? "(sem título)";
+                    relatorio.AppendLine($"• {nome}");
+                    relatorio.AppendLine($"  ID: {jogo?.Id ?? "(sem id)"}");
+                    relatorio.AppendLine($"  Source: {jogo?.Source ?? "(sem source)"}");
+                    relatorio.AppendLine($"  Instalado: {(jogo?.IsInstalled.HasValue == true ? jogo.IsInstalled.Value.ToString() : "(nao enviado)")}");
+                    relatorio.AppendLine($"  Diretorio: {jogo?.InstallDirectory ?? "(vazio)"}");
+                    relatorio.AppendLine();
                 }
             }
 
-            logCmd.AppendLine("echo.");
-            logCmd.AppendLine("echo =========================================================");
-            logCmd.AppendLine("echo Pressione qualquer tecla para fechar...");
-            logCmd.AppendLine("pause > nul");
+            // Diagnostico extra: se o backend diz que houve skips mas todos os IDs
+            // enviados apareceram em results, então a API está contabilizando skip
+            // por uma regra interna que não é representada na lista results.
+            if (puladosBackend > 0 && jogosPulados.Count == 0)
+            {
+                relatorio.AppendLine("[DIAGNOSTICO]");
+                relatorio.AppendLine("O backend informou jogo(s) pulado(s), mas nenhum ID enviado ficou ausente de results.");
+                relatorio.AppendLine("Neste caso o motivo do skip so pode ser descoberto no backend.");
+                relatorio.AppendLine("Execute com LOG DETALHADO para conferir o JSON bruto da resposta.");
+                relatorio.AppendLine();
+            }
 
-            File.WriteAllText(tempBat, logCmd.ToString(), Encoding.UTF8);
-            Process.Start("cmd.exe", $"/c start cmd.exe /k \"{tempBat}\"");
+            relatorio.AppendLine();
+            relatorio.AppendLine("=========================================================");
+            relatorio.AppendLine(" RESUMO");
+            relatorio.AppendLine($" Enviados:    {enviados.Count}");
+            relatorio.AppendLine($" Processados: {processados}");
+            relatorio.AppendLine($" Pulados:     {puladosBackend}");
+            relatorio.AppendLine("---------------------------------------------------------");
+            relatorio.AppendLine($" Identificados como pulados por ID: {jogosPulados.Count}");
+            relatorio.AppendLine("=========================================================");
+
+            // Agora a comparação correta é entre o contador skipped do backend e
+            // os IDs enviados que não vieram em results.
+            if (puladosBackend != jogosPulados.Count)
+            {
+                relatorio.AppendLine();
+                relatorio.AppendLine("[AVISO]");
+                relatorio.AppendLine(
+                    $"O backend informou {puladosBackend} pulado(s), mas a comparação " +
+                    $"dos IDs encontrou {jogosPulados.Count}.");
+                relatorio.AppendLine(
+                    "Isso indica que a resposta do backend não contém um ID para cada " +
+                    "jogo processado, ou usa uma regra de contagem diferente.");
+            }
+
+            if (resultadosSemId > 0)
+            {
+                relatorio.AppendLine();
+                relatorio.AppendLine($"[AVISO] {resultadosSemId} resultado(s) vieram sem campo id.");
+            }
+
+            return relatorio.ToString();
         }
+
+        private string GerarErroTerminal(int statusCode, string responseText)
+        {
+            var log = new StringBuilder();
+            log.AppendLine();
+            log.AppendLine("[ERRO DO SERVIDOR]");
+            log.AppendLine("---------------------------------------------------------");
+            log.AppendLine($"HTTP {statusCode}");
+            log.AppendLine(responseText);
+            log.AppendLine();
+            log.AppendLine("=========================================================");
+            log.AppendLine(" SINCRONIZACAO FALHOU");
+            log.AppendLine("=========================================================");
+            return log.ToString();
+        }
+
+
+        private string GerarExcecaoTerminal(Exception ex)
+        {
+            var log = new StringBuilder();
+            log.AppendLine();
+            log.AppendLine("[ERRO DE CONEXAO]");
+            log.AppendLine("---------------------------------------------------------");
+            log.AppendLine(ex.Message);
+            log.AppendLine();
+            log.AppendLine("=========================================================");
+            log.AppendLine(" SINCRONIZACAO FALHOU");
+            log.AppendLine("=========================================================");
+            return log.ToString();
+        }
+
+        private string IniciarLogTerminal(string json, int total, bool comInstalacao, bool logDetalhado)
+        {
+            string idSessao = Guid.NewGuid().ToString("N");
+            string pastaTemp = Path.Combine(Path.GetTempPath(), "playnite_sync");
+            Directory.CreateDirectory(pastaTemp);
+
+            string arquivoInicial = Path.Combine(pastaTemp, $"sync_{idSessao}_inicio.txt");
+            string arquivoResultado = Path.Combine(pastaTemp, $"sync_{idSessao}_resultado.txt");
+            string arquivoBat = Path.Combine(pastaTemp, $"sync_{idSessao}.bat");
+
+            var logInicial = new StringBuilder();
+            logInicial.AppendLine("=========================================================");
+            logInicial.AppendLine(" PLAYNITE SYNC");
+            logInicial.AppendLine($" DESTINO: {ServerUrl}");
+            logInicial.AppendLine($" TOTAL ENVIADO: {total}");
+            logInicial.AppendLine($" INCLUI STATUS DE INSTALACAO: {comInstalacao}");
+            logInicial.AppendLine($" LOG DETALHADO: {logDetalhado}");
+            logInicial.AppendLine("=========================================================");
+            logInicial.AppendLine();
+            logInicial.AppendLine("Preparando jogos...");
+
+            if (logDetalhado)
+            {
+                logInicial.AppendLine();
+                logInicial.AppendLine("[JSON ENVIADO]");
+                logInicial.AppendLine("---------------------------------------------------------");
+                logInicial.AppendLine(json);
+            }
+            else
+            {
+                logInicial.AppendLine("JSON de envio omitido (log resumido).");
+            }
+
+            logInicial.AppendLine();
+            logInicial.AppendLine("Enviando para o servidor...");
+            logInicial.AppendLine("Aguardando resposta...");
+
+            File.WriteAllText(arquivoInicial, logInicial.ToString(), Encoding.UTF8);
+
+            var bat = new StringBuilder();
+            bat.AppendLine("@echo off");
+            bat.AppendLine("chcp 65001 > nul");
+            bat.AppendLine($"title Playnite Sync - Batch ({total} jogos)");
+            bat.AppendLine($"type \"{arquivoInicial}\"");
+            bat.AppendLine(":aguardar_resultado");
+            bat.AppendLine($"if not exist \"{arquivoResultado}\" (");
+            bat.AppendLine("  timeout /t 1 /nobreak > nul");
+            bat.AppendLine("  goto aguardar_resultado");
+            bat.AppendLine(")");
+            bat.AppendLine($"type \"{arquivoResultado}\"");
+            bat.AppendLine("echo.");
+            bat.AppendLine("echo Pressione qualquer tecla para fechar...");
+            bat.AppendLine("pause > nul");
+            bat.AppendLine($"del /q \"{arquivoInicial}\" > nul 2>&1");
+            bat.AppendLine($"del /q \"{arquivoResultado}\" > nul 2>&1");
+            bat.AppendLine($"del /q \"{arquivoBat}\" > nul 2>&1");
+
+            File.WriteAllText(arquivoBat, bat.ToString(), Encoding.UTF8);
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = arquivoBat,
+                UseShellExecute = true
+            });
+
+            return arquivoResultado;
+        }
+
     }
 }

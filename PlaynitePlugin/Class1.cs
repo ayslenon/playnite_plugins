@@ -15,14 +15,14 @@ namespace ImportadorGeneros
 {
     public enum ModoPreenchimento
     {
-        Sobrescrever,
         Mesclar,
+        Sobrescrever,
         Ignorar
     }
 
     public class ImportadorGenerosSettings : ObservableObject
     {
-        private string csvPath = @"C:\Users\Console\Downloads\seus_generos.csv";
+        private string csvPath = @"C:\Users\Console\Downloads\Planilha_de_jogos_traduzida.csv";
         private ModoPreenchimento modo = ModoPreenchimento.Mesclar;
         private bool verboseLog = true;
 
@@ -56,8 +56,8 @@ namespace ImportadorGeneros
 
         public Dictionary<ModoPreenchimento, string> ModosDisponiveis { get; } = new Dictionary<ModoPreenchimento, string>
         {
-            { ModoPreenchimento.Mesclar, "Mesclar (adiciona gêneros do CSV sem apagar os existentes)" },
-            { ModoPreenchimento.Sobrescrever, "Sobrescrever (limpa os gêneros atuais e insere os do CSV)" },
+            { ModoPreenchimento.Mesclar, "Mesclar (adiciona dados do CSV sem apagar os existentes)" },
+            { ModoPreenchimento.Sobrescrever, "Sobrescrever (limpa gêneros/tags atuais e insere os do CSV)" },
             { ModoPreenchimento.Ignorar, "Ignorar (pula jogos que já possuem qualquer gênero preenchido)" }
         };
 
@@ -128,16 +128,14 @@ namespace ImportadorGeneros
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-            // Linha 0: Label CSV
             var labelCsv = new TextBlock
             {
-                Text = "Caminho do Arquivo CSV de Gêneros:",
+                Text = "Caminho do Arquivo CSV de Jogos:",
                 Margin = new Thickness(0, 0, 0, 8),
                 FontWeight = FontWeights.Bold
             };
             Grid.SetRow(labelCsv, 0);
 
-            // Linha 1: Input CSV + Botão
             var stackCsv = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 15) };
             var textBox = new TextBox
             {
@@ -160,16 +158,14 @@ namespace ImportadorGeneros
             stackCsv.Children.Add(button);
             Grid.SetRow(stackCsv, 1);
 
-            // Linha 2: Label Modo
             var labelModo = new TextBlock
             {
-                Text = "Modo de Preenchimento de Gêneros:",
+                Text = "Modo de Preenchimento de Gêneros e Tags:",
                 Margin = new Thickness(0, 0, 0, 8),
                 FontWeight = FontWeights.Bold
             };
             Grid.SetRow(labelModo, 2);
 
-            // Linha 3: ComboBox para seleção do Modo
             var comboModo = new ComboBox
             {
                 Width = 510,
@@ -183,10 +179,9 @@ namespace ImportadorGeneros
             comboModo.SetBinding(ComboBox.SelectedValueProperty, new System.Windows.Data.Binding("Settings.Modo") { Mode = System.Windows.Data.BindingMode.TwoWay });
             Grid.SetRow(comboModo, 3);
 
-            // Linha 4: Checkbox Verbose Log
             var chkVerbose = new CheckBox
             {
-                Content = "Log detalhado (exibe todos os jogos no terminal; se desmarcado, exibe apenas falhas)",
+                Content = "Log detalhado (exibe todos os jogos e mapeamentos no terminal)",
                 Margin = new Thickness(0, 0, 0, 10)
             };
             chkVerbose.SetBinding(CheckBox.IsCheckedProperty, new System.Windows.Data.Binding("Settings.VerboseLog") { Mode = System.Windows.Data.BindingMode.TwoWay });
@@ -207,7 +202,7 @@ namespace ImportadorGeneros
             {
                 new MainMenuItem
                 {
-                    Description = "Importar gêneros do CSV (Terminal)",
+                    Description = "Importar Dados do CSV de Jogos (Terminal)",
                     MenuSection = "@Sincronizar Dados",
                     Action = (mainMenuItemArgs) => ProcessarCSV()
                 }
@@ -222,7 +217,7 @@ namespace ImportadorGeneros
 
             if (string.IsNullOrWhiteSpace(csvPath) || !File.Exists(csvPath))
             {
-                PlayniteApi.Dialogs.ShowErrorMessage($"Arquivo CSV não encontrado em:\n'{csvPath}'\n\nPor favor, configure o caminho em: Configurações > Extensões > Importador de Gêneros CSV.", "Erro Importador");
+                PlayniteApi.Dialogs.ShowErrorMessage($"Arquivo CSV não encontrado em:\n'{csvPath}'\n\nConfigure em: Configurações > Extensões > Importador de Gêneros CSV.", "Erro Importador");
                 return;
             }
 
@@ -231,17 +226,17 @@ namespace ImportadorGeneros
 
             logCmd.AppendLine("@echo off");
             logCmd.AppendLine("chcp 65001 > nul");
-            logCmd.AppendLine("title Playnite - Importador de Generos (Plugin C# v1.2.0)");
+            logCmd.AppendLine("title Playnite - Importador Avançado de Planilhas (v2.0.0)");
             logCmd.AppendLine("echo =========================================================");
-            logCmd.AppendLine("echo  INICIANDO IMPORTACAO DE GENEROS VIA PLUGIN C# NATIVO");
+            logCmd.AppendLine("echo  INICIANDO IMPORTACAO DE GENEROS, TAGS E METADADOS VIA C#");
             logCmd.AppendLine($"echo  Modo de Preenchimento: {modo.ToString().ToUpper()}");
-            logCmd.AppendLine($"echo  Nivel de Log:          {(verbose ? "DETALHADO (Tudo)" : "RESUMIDO (Apenas Falhas)")}");
             logCmd.AppendLine("echo =========================================================");
             logCmd.AppendLine("echo.");
 
             int atualizados = 0;
             int falhas = 0;
             int ignorados = 0;
+            int novasTags = 0;
             int novosGeneros = 0;
 
             using (PlayniteApi.Database.BufferedUpdate())
@@ -250,18 +245,22 @@ namespace ImportadorGeneros
                                  .Where(l => !string.IsNullOrWhiteSpace(l))
                                  .ToList();
 
-                if (linhas.Count > 0 && (linhas[0].ToLower().Contains("nome") || linhas[0].ToLower().Contains("game")))
+                if (linhas.Count > 0 && linhas[0].ToLower().Contains("nome"))
                 {
                     linhas.RemoveAt(0);
                 }
 
                 foreach (var linha in linhas)
                 {
-                    int posVirgula = linha.IndexOf(',');
-                    if (posVirgula == -1) continue;
+                    // Parser manual de CSV seguro contra vírgulas dentro de aspas (como a lista de gêneros)
+                    var colunas = ParseCsvLine(linha);
+                    if (colunas.Count < 5) continue;
 
-                    string nomeJogoCsv = linha.Substring(0, posVirgula).Trim('"', ' ');
-                    string generosRaw = linha.Substring(posVirgula + 1).Trim('"', ' ');
+                    string nomeJogoCsv = colunas[0].Trim();
+                    string modoJogoCsv = colunas[1].Trim();
+                    string numJogadoresCsv = colunas[2].Trim();
+                    string vontadeJogarCsv = colunas[3].Trim();
+                    string generosRaw = colunas[4].Trim();
 
                     if (string.IsNullOrWhiteSpace(nomeJogoCsv)) continue;
 
@@ -270,30 +269,77 @@ namespace ImportadorGeneros
 
                     if (jogo == null)
                     {
-                        logCmd.AppendLine($"echo [FALHA] Jogo nao encontrado no Playnite: '{nomeJogoCsv}'");
+                        logCmd.AppendLine($"echo [FALHA] Jogo nao encontrado: '{nomeJogoCsv}'");
                         falhas++;
                         continue;
                     }
 
-                    // AQUI ESTÁ A LÓGICA DO 'CONTINUE' PARA O MODO IGNORAR:
                     if (modo == ModoPreenchimento.Ignorar && jogo.GenreIds != null && jogo.GenreIds.Count > 0)
                     {
-                        if (verbose)
-                        {
-                            logCmd.AppendLine($"echo [IGNORADO] {jogo.Name} já possui generos cadastrados.");
-                        }
+                        if (verbose) logCmd.AppendLine($"echo [IGNORADO] {jogo.Name} ja possui generos.");
                         ignorados++;
-                        continue; // Sai do loop e pula para o próximo jogo
+                        continue;
                     }
 
-                    // Se for modo Sobrescrever, limpa a lista existente antes
-                    if (modo == ModoPreenchimento.Sobrescrever || jogo.GenreIds == null)
+                    // Inicialização/Limpeza dependendo do modo selecionado
+                    if (modo == ModoPreenchimento.Sobrescrever || jogo.GenreIds == null) jogo.GenreIds = new List<Guid>();
+                    if (modo == ModoPreenchimento.Sobrescrever || jogo.TagIds == null) jogo.TagIds = new List<Guid>();
+
+                    List<string> tagsParaAdicionar = new List<string>();
+
+                    // === REGRA 1: Mapeamento de Número de Jogadores ===
+                    string tagJogadores = "1 Jogador"; // Default se for em branco
+                    if (!string.IsNullOrWhiteSpace(numJogadoresCsv))
                     {
-                        jogo.GenreIds = new List<Guid>();
+                        if (numJogadoresCsv.Equals("1", StringComparison.OrdinalIgnoreCase)) tagJogadores = "1 Jogador";
+                        else if (numJogadoresCsv.Equals("2", StringComparison.OrdinalIgnoreCase)) tagJogadores = "2 Jogadores";
+			else if (numJogadoresCsv.Contains("3")) tagJogadores = "Até 4 Jogadores";
+                        else if (numJogadoresCsv.Contains("4")) tagJogadores = "Até 4 Jogadores";
+                        else tagJogadores = "Mais de 4 Jogadores";
+                    }
+                    tagsParaAdicionar.Add(tagJogadores);
+
+                    // === REGRA 2: Modo Coop (Independe do tipo se houver "Coop") ===
+                    if (modoJogoCsv.ToLower().Contains("coop") || modoJogoCsv.ToLower().Contains("co-op"))
+                    {
+                        tagsParaAdicionar.Add("Coop");
                     }
 
-                    var listaGeneros = generosRaw.Split(new[] { ',', ';', '/' }, StringSplitOptions.RemoveEmptyEntries);
+                    // === REGRA 3: Mapeamento de Vontade de Jogar ===
+                    if (int.TryParse(vontadeJogarCsv, out int vontadeValor))
+                    {
+                        int valorPlaynite = 1;
+                        if (vontadeValor == -1) valorPlaynite = 1;
+                        else if (vontadeValor == 1) valorPlaynite = 2;
+                        else if (vontadeValor == 0) valorPlaynite = 3; // Jogos coop de sofá/party/online
+                        else if (vontadeValor == 6) valorPlaynite = 3;
+                        else if (vontadeValor == -2) valorPlaynite = 2;
+                        else if (vontadeValor >= 1 && vontadeValor <= 5) valorPlaynite = vontadeValor;
 
+                        tagsParaAdicionar.Add($"[Vontade de Jogar] {valorPlaynite}");
+                    }
+
+                    // Processamento e vínculo das Tags no Playnite
+                    foreach (var tagNome in tagsParaAdicionar)
+                    {
+                        var tagObj = PlayniteApi.Database.Tags.FirstOrDefault(t => 
+                            t.Name != null && t.Name.Trim().Equals(tagNome, StringComparison.OrdinalIgnoreCase));
+
+                        if (tagObj == null)
+                        {
+                            tagObj = new Tag(tagNome);
+                            PlayniteApi.Database.Tags.Add(tagObj);
+                            novasTags++;
+                        }
+
+                        if (!jogo.TagIds.Contains(tagObj.Id))
+                        {
+                            jogo.TagIds.Add(tagObj.Id);
+                        }
+                    }
+
+                    // === REGRA 4: Gêneros Traduzidos ===
+                    var listaGeneros = generosRaw.Split(new[] { ',', ';', '/' }, StringSplitOptions.RemoveEmptyEntries);
                     foreach (var gNomeRaw in listaGeneros)
                     {
                         string gNome = gNomeRaw.Trim();
@@ -307,10 +353,6 @@ namespace ImportadorGeneros
                             generoObj = new Genre(gNome);
                             PlayniteApi.Database.Genres.Add(generoObj);
                             novosGeneros++;
-                            if (verbose)
-                            {
-                                logCmd.AppendLine($"echo   [NOVO GENERO] Criado no banco: '{gNome}'");
-                            }
                         }
 
                         if (!jogo.GenreIds.Contains(generoObj.Id))
@@ -324,27 +366,55 @@ namespace ImportadorGeneros
 
                     if (verbose)
                     {
-                        logCmd.AppendLine($"echo [OK] {jogo.Name} ^| Total de generos atrelados: {jogo.GenreIds.Count}");
+                        logCmd.AppendLine($"echo [OK] Mapeado: {jogo.Name} ^| Gêneros: {jogo.GenreIds.Count} ^| Tags: {jogo.TagIds.Count}");
                     }
                 }
             }
 
             logCmd.AppendLine("echo.");
             logCmd.AppendLine("echo =========================================================");
-            logCmd.AppendLine("echo  RELATORIO DA IMPORTACAO");
+            logCmd.AppendLine("echo  RELATORIO FINAL DA IMPORTACAO");
             logCmd.AppendLine("echo =========================================================");
-            logCmd.AppendLine($"echo  - Jogos Atualizados com Sucesso: {atualizados}");
-            logCmd.AppendLine($"echo  - Jogos Ignorados (Já com gênero): {ignorados}");
-            logCmd.AppendLine($"echo  - Novos Generos Criados:         {novosGeneros}");
-            logCmd.AppendLine($"echo  - Jogos Nao Encontrados:         {falhas}");
+            logCmd.AppendLine($"echo  - Jogos Modificados com Sucesso: {atualizados}");
+            logCmd.AppendLine($"echo  - Jogos Ignorados:               {ignorados}");
+            logCmd.AppendLine($"echo  - Novas Tags Criadas no Banco:   {novasTags}");
+            logCmd.AppendLine($"echo  - Novos Generos Adicionados:     {novosGeneros}");
+            logCmd.AppendLine($"echo  - Jogos Não Localizados:         {falhas}");
             logCmd.AppendLine("echo =========================================================");
             logCmd.AppendLine("echo.");
-            logCmd.AppendLine("echo Pressione qualquer tecla para fechar esta janela...");
+            logCmd.AppendLine("echo Pressione qualquer tecla para encerrar...");
             logCmd.AppendLine("pause > nul");
 
             File.WriteAllText(tempBat, logCmd.ToString(), Encoding.UTF8);
-
             Process.Start("cmd.exe", $"/c start cmd.exe /k \"{tempBat}\"");
+        }
+
+        // Função auxiliar para destrinchar a linha de CSV respeitando blocos entre aspas
+        private List<string> ParseCsvLine(string line)
+        {
+            List<string> result = new List<string>();
+            StringBuilder currentColumn = new StringBuilder();
+            bool inQuotes = false;
+
+            for (int i = 0; i < line.Length; i++)
+            {
+                char c = line[i];
+                if (c == '"')
+                {
+                    inQuotes = !inQuotes;
+                }
+                else if (c == ',' && !inQuotes)
+                {
+                    result.Add(currentColumn.ToString());
+                    currentColumn.Clear();
+                }
+                else
+                {
+                    currentColumn.Append(c);
+                }
+            }
+            result.Add(currentColumn.ToString());
+            return result;
         }
     }
 }
