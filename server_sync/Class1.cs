@@ -614,6 +614,11 @@ namespace SyncServerPlaynite
             public int interest_rating { get; set; }
             public int? replay_score { get; set; }
             public decimal? score { get; set; }
+            public string notes { get; set; }
+            public string coop_players { get; set; }
+            public List<string> coop_type { get; set; }
+            public string coop_screen_type { get; set; }
+            public string input_recommendation { get; set; }
             public string updated_at { get; set; }
         }
 
@@ -752,12 +757,46 @@ namespace SyncServerPlaynite
                 result.ChangedFields.Add("nota de usuário");
             if (AplicarTagsGerenciadas(jogo, dados, result.Warnings))
                 result.ChangedFields.Add("tags gerenciadas");
+            if (AplicarTagsServidor(jogo, dados))
+                result.ChangedFields.Add("cooperação e input");
+            // A presença dos novos campos identifica servidores que suportam notas no pull.
+            if (dados.coop_players != null && jogo.Notes != dados.notes)
+            {
+                jogo.Notes = dados.notes;
+                result.ChangedFields.Add("observações");
+            }
 
             result.Changed = result.ChangedFields.Count > 0;
 
-            // Cooperação e jogadores ficam fora do pull ativo nesta versão.
-            // Plataforma e fonte também não são tocadas para preservar outras extensões.
             return result;
+        }
+
+        private bool AplicarTagsServidor(Game jogo, PullGameDTO dados)
+        {
+            // Um servidor antigo não envia estes campos; preserve as tags existentes.
+            if (dados.coop_type == null || dados.coop_players == null ||
+                dados.coop_screen_type == null || dados.input_recommendation == null)
+                return false;
+
+            var nomes = dados.coop_type.Count == 0
+                ? new List<string> { "[Servidor] Coop: Nenhum" }
+                : dados.coop_type.Select(v => $"[Servidor] Coop: {v}").ToList();
+            nomes.Add($"[Servidor] Jogadores: {dados.coop_players}");
+            nomes.Add($"[Servidor] Tela: {dados.coop_screen_type}");
+            nomes.Add($"[Servidor] Input: {dados.input_recommendation}");
+            var desired = nomes.Select(ObterOuCriarTag).Select(t => t.Id).Distinct().ToList();
+            var ids = new List<Guid>(jogo.TagIds ?? new List<Guid>());
+            string[] prefixos = { "[Servidor] Coop:", "[Servidor] Jogadores:",
+                "[Servidor] Tela:", "[Servidor] Input:" };
+            var antigos = PlayniteApi.Database.Tags.Where(t => ids.Contains(t.Id) &&
+                prefixos.Any(p => (t.Name ?? "").StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+                .Select(t => t.Id).ToList();
+            if (antigos.Count == desired.Count && antigos.All(desired.Contains))
+                return false;
+            ids.RemoveAll(id => antigos.Contains(id));
+            ids.AddRange(desired.Where(id => !ids.Contains(id)));
+            jogo.TagIds = ids;
+            return true;
         }
 
         private bool AplicarGeneros(Game jogo, List<string> nomes)
