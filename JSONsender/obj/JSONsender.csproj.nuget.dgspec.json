@@ -1,0 +1,62 @@
+{
+  "format": 1,
+  "restore": {
+    "C:\\Users\\Console\\Downloads\\JSONsender\\JSONsender.csproj": {}
+  },
+  "projects": {
+    "C:\\Users\\Console\\Downloads\\JSONsender\\JSONsender.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "C:\\Users\\Console\\Downloads\\JSONsender\\JSONsender.csproj",
+        "projectName": "JSONsender",
+        "projectPath": "C:\\Users\\Console\\Downloads\\JSONsender\\JSONsender.csproj",
+        "packagesPath": "C:\\Users\\Console\\.nuget\\packages\\",
+        "outputPath": "C:\\Users\\Console\\Downloads\\JSONsender\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\Console\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net462"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net462": {
+            "targetAlias": "net462",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net462": {
+          "targetAlias": "net462",
+          "dependencies": {
+            "Microsoft.NETFramework.ReferenceAssemblies": {
+              "suppressParent": "All",
+              "target": "Package",
+              "version": "[1.0.3, )",
+              "autoReferenced": true
+            },
+            "PlayniteSDK": {
+              "target": "Package",
+              "version": "[6.11.0, )"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.423\\RuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "r32YQ/JMGUw=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\Console\\Downloads\\JSONsender\\JSONsender.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\Console\\.nuget\\packages\\microsoft.netframework.referenceassemblies\\1.0.3\\microsoft.netframework.referenceassemblies.1.0.3.nupkg.sha512",
+    "C:\\Users\\Console\\.nuget\\packages\\microsoft.netframework.referenceassemblies.net462\\1.0.3\\microsoft.netframework.referenceassemblies.net462.1.0.3.nupkg.sha512",
+    "C:\\Users\\Console\\.nuget\\packages\\playnitesdk\\6.11.0\\playnitesdk.6.11.0.nupkg.sha512"
+  ],
+  "logs": []
+}

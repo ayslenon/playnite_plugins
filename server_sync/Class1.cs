@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -85,6 +86,12 @@ namespace SyncServerPlaynite
                     Description = "[Uplink] Este Jogo",
                     MenuSection = "Sincronizar Dados",
                     Action = (a) => ConfirmarEEnviar(a.Games)
+                },
+                new GameMenuItem
+                {
+                    Description = "[Downlink] Este Jogo",
+                    MenuSection = "Sincronizar Dados",
+                    Action = (a) => ConfirmarEImportar(a.Games)
                 }
             };
         }
@@ -111,6 +118,24 @@ namespace SyncServerPlaynite
                     Description = "[Uplink] Jogos Selecionados",
                     MenuSection = "@Sincronizar Dados",
                     Action = (a) => ConfirmarEEnviar(PlayniteApi.MainView.SelectedGames.ToList())
+                },
+                new MainMenuItem
+                {
+                    Description = "[Downlink] Todos os Jogos",
+                    MenuSection = "@Sincronizar Dados",
+                    Action = (a) => ConfirmarEImportar(PlayniteApi.Database.Games.ToList())
+                },
+                new MainMenuItem
+                {
+                    Description = "[Downlink] Jogos Filtrados",
+                    MenuSection = "@Sincronizar Dados",
+                    Action = (a) => ConfirmarEImportar(PlayniteApi.MainView.FilteredGames.ToList())
+                },
+                new MainMenuItem
+                {
+                    Description = "[Downlink] Jogos Selecionados",
+                    MenuSection = "@Sincronizar Dados",
+                    Action = (a) => ConfirmarEImportar(PlayniteApi.MainView.SelectedGames.ToList())
                 }
             };
         }
@@ -559,5 +584,475 @@ namespace SyncServerPlaynite
             return arquivoResultado;
         }
 
+        private const string PullServerUrl = "https://localhost:8000/api/sync/playnite/pull";
+        private const string MustTestTag = "[Servidor] Precisa Testar";
+        private const string InterestTagPrefix = "[Vontade de Jogar]";
+        private const string ReplayTagPrefix = "[Vontade de Rejogar]";
+        private static readonly HttpClient pullHttpClient = new HttpClient();
+
+        public class PullRequest
+        {
+            public List<string> playnite_ids { get; set; } = new List<string>();
+        }
+
+        public class PullResponse
+        {
+            public int requested { get; set; }
+            public int found { get; set; }
+            public int not_found { get; set; }
+            public List<PullGameDTO> games { get; set; } = new List<PullGameDTO>();
+            public List<string> missing_playnite_ids { get; set; } = new List<string>();
+        }
+
+        public class PullGameDTO
+        {
+            public string playnite_id { get; set; }
+            public List<string> genres { get; set; } = new List<string>();
+            public string gameplay_status { get; set; }
+            public bool favorite { get; set; }
+            public bool must_test { get; set; }
+            public int interest_rating { get; set; }
+            public int? replay_score { get; set; }
+            public string score { get; set; }
+            public string updated_at { get; set; }
+        }
+
+        private class PullApplyResult
+        {
+            public bool Changed { get; set; }
+            public List<string> ChangedFields { get; } = new List<string>();
+            public List<string> Warnings { get; } = new List<string>();
+        }
+
+        private class PullGameReport
+        {
+            public string Name { get; set; }
+            public PullApplyResult Result { get; set; }
+        }
+
+        private void ConfirmarEImportar(List<Game> jogos)
+        {
+            if (jogos == null || jogos.Count == 0)
+            {
+                PlayniteApi.Dialogs.ShowErrorMessage(
+                    "Nenhum jogo selecionado para downlink.", "Sync Dashboard");
+                return;
+            }
+
+            var detalhado = new MessageBoxOption("Sim (Exibir alterações)");
+            var resumido = new MessageBoxOption("Não (Resumo)");
+            var cancelar = new MessageBoxOption("Cancelar", true, false);
+            var escolha = PlayniteApi.Dialogs.ShowMessage(
+                $"Você está prestes a consultar {jogos.Count} jogo(s) no servidor.\n\n" +
+                "Deseja exibir o relatório detalhado das alterações?",
+                "Confirmar Downlink",
+                MessageBoxImage.Question,
+                new List<MessageBoxOption> { detalhado, resumido, cancelar });
+
+            if (escolha == cancelar || escolha == null)
+                return;
+
+            Task.Run(() => ProcessarImportacaoAsync(jogos, escolha == detalhado));
+        }
+
+        private async Task ProcessarImportacaoAsync(List<Game> jogos, bool logDetalhado)
+        {
+            string arquivoResultadoTerminal = null;
+            try
+            {
+                var validos = (jogos ?? new List<Game>())
+                    .Where(j => j != null && j.Id != Guid.Empty).ToList();
+                var ids = validos.Select(j => j.Id.ToString())
+                    .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                var payload = new PullRequest { playnite_ids = ids };
+                string jsonBody = Serialization.ToJson(payload, true);
+                arquivoResultadoTerminal = IniciarImportLogTerminal(
+                    jsonBody, ids.Count, logDetalhado);
+
+                var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+                var response = await pullHttpClient.PostAsync(PullServerUrl, content);
+                string responseText = await response.Content.ReadAsStringAsync();
+                if (!response.IsSuccessStatusCode)
+                {
+                    File.WriteAllText(arquivoResultadoTerminal,
+                        GerarErroTerminal((int)response.StatusCode, responseText), Encoding.UTF8);
+                    PlayniteApi.Dialogs.ShowErrorMessage(
+                        $"Erro no servidor (Status {(int)response.StatusCode}):\n{responseText}",
+                        "Erro de Downlink");
+                    return;
+                }
+
+                var result = Serialization.FromJson<PullResponse>(responseText)
+                    ?? new PullResponse();
+                var byId = validos.ToDictionary(
+                    j => j.Id.ToString(), StringComparer.OrdinalIgnoreCase);
+                var reports = new List<PullGameReport>();
+
+                using (PlayniteApi.Database.BufferedUpdate())
+                {
+                    foreach (var remote in result.games ?? new List<PullGameDTO>())
+                    {
+                        if (remote == null || string.IsNullOrWhiteSpace(remote.playnite_id) ||
+                            !byId.TryGetValue(remote.playnite_id, out var jogo))
+                            continue;
+
+                        var applied = AplicarDadosServidor(jogo, remote);
+                        if (applied.Changed)
+                            PlayniteApi.Database.Games.Update(jogo);
+                        reports.Add(new PullGameReport { Name = jogo.Name, Result = applied });
+                    }
+                }
+
+                int alterados = reports.Count(r => r.Result.Changed);
+                int naoAlterados = reports.Count(r => !r.Result.Changed);
+                int naoEncontrados = result.missing_playnite_ids?.Count ?? 0;
+                File.WriteAllText(arquivoResultadoTerminal,
+                    GerarRelatorioImportacao(result, reports, responseText, logDetalhado),
+                    Encoding.UTF8);
+
+                PlayniteApi.Dialogs.ShowMessage(
+                    "Downlink concluído!\n\n" +
+                    $"• Alterados: {alterados}\n" +
+                    $"• Não alterados: {naoAlterados}\n" +
+                    $"• Não encontrados: {naoEncontrados}\n\n" +
+                    "Consulte o terminal para o relatório detalhado.",
+                    "Resultado do Downlink", MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                if (!string.IsNullOrWhiteSpace(arquivoResultadoTerminal))
+                {
+                    try
+                    {
+                        File.WriteAllText(arquivoResultadoTerminal,
+                            GerarExcecaoTerminal(ex), Encoding.UTF8);
+                    }
+                    catch { }
+                }
+                PlayniteApi.Dialogs.ShowErrorMessage(
+                    $"Falha de conexão com o servidor:\n{ex.Message}",
+                    "Erro de Conexão");
+            }
+        }
+
+        private PullApplyResult AplicarDadosServidor(Game jogo, PullGameDTO dados)
+        {
+            var result = new PullApplyResult();
+            if (AplicarGeneros(jogo, dados.genres ?? new List<string>()))
+                result.ChangedFields.Add("gêneros");
+            if (AplicarStatus(jogo, dados.gameplay_status, result.Warnings))
+                result.ChangedFields.Add("status");
+            if (jogo.Favorite != dados.favorite)
+            {
+                jogo.Favorite = dados.favorite;
+                result.ChangedFields.Add("favorito");
+            }
+            if (AplicarUserScore(jogo, dados, result.Warnings))
+                result.ChangedFields.Add("nota de usuário");
+            if (AplicarTagsGerenciadas(jogo, dados, result.Warnings))
+                result.ChangedFields.Add("tags gerenciadas");
+
+            result.Changed = result.ChangedFields.Count > 0;
+
+            // Cooperação e jogadores ficam fora do pull ativo nesta versão.
+            // Plataforma e fonte também não são tocadas para preservar outras extensões.
+            return result;
+        }
+
+        private bool AplicarGeneros(Game jogo, List<string> nomes)
+        {
+            var desired = new List<Guid>();
+            foreach (string raw in nomes)
+            {
+                string nome = (raw ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(nome))
+                    continue;
+                var genero = PlayniteApi.Database.Genres.FirstOrDefault(g =>
+                    string.Equals(g.Name, nome, StringComparison.OrdinalIgnoreCase));
+                if (genero == null)
+                {
+                    genero = new Genre(nome);
+                    PlayniteApi.Database.Genres.Add(genero);
+                }
+                if (!desired.Contains(genero.Id))
+                    desired.Add(genero.Id);
+            }
+
+            var current = jogo.GenreIds ?? new List<Guid>();
+            if (current.Count == desired.Count && current.All(desired.Contains))
+                return false;
+            jogo.GenreIds = desired;
+            return true;
+        }
+
+        private bool AplicarStatus(Game jogo, string status, List<string> warnings)
+        {
+            var aliases = AliasesStatus(status);
+            var target = PlayniteApi.Database.CompletionStatuses.FirstOrDefault(s =>
+                aliases.Any(alias => string.Equals(
+                    s.Name?.Trim(), alias, StringComparison.OrdinalIgnoreCase)));
+            if (target == null)
+            {
+                warnings.Add($"status '{status}' não encontrado no Playnite");
+                return false;
+            }
+            if (jogo.CompletionStatusId == target.Id)
+                return false;
+            jogo.CompletionStatusId = target.Id;
+            return true;
+        }
+
+        private bool AplicarUserScore(Game jogo, PullGameDTO dados, List<string> warnings)
+        {
+            // A nota pessoal vem de score no formato x/10. replay_score representa
+            // apenas a vontade de rejogar e é aplicado como tag gerenciada.
+            if (string.IsNullOrWhiteSpace(dados.score))
+                return false;
+
+            if (!TentarConverterScore(dados.score, out int desired))
+            {
+                warnings.Add($"score inválido: '{dados.score}'");
+                return false;
+            }
+
+            if (jogo.UserScore == desired)
+                return false;
+
+            jogo.UserScore = desired;
+            return true;
+        }
+
+        private static bool TentarConverterScore(string score, out int userScore)
+        {
+            userScore = 0;
+            string[] parts = (score ?? string.Empty).Trim().Replace(',', '.').Split('/');
+            if (parts.Length != 2 ||
+                !string.Equals(parts[1].Trim(), "10", StringComparison.Ordinal))
+                return false;
+
+            if (!decimal.TryParse(parts[0].Trim(), NumberStyles.AllowDecimalPoint,
+                    CultureInfo.InvariantCulture, out decimal value) ||
+                value < 0 || value > 10)
+                return false;
+
+            userScore = (int)Math.Round(
+                value * 10m, MidpointRounding.AwayFromZero);
+            return true;
+        }
+
+        private bool AplicarTagsGerenciadas(
+            Game jogo, PullGameDTO dados, List<string> warnings)
+        {
+            if (dados.interest_rating < 1 || dados.interest_rating > 5)
+            {
+                warnings.Add("interest_rating fora da escala 1-5");
+                return false;
+            }
+
+            var currentIds = new List<Guid>(jogo.TagIds ?? new List<Guid>());
+            var currentTags = PlayniteApi.Database.Tags
+                .Where(tag => currentIds.Contains(tag.Id)).ToList();
+            var interestTag = ObterOuCriarTag(
+                $"{InterestTagPrefix} {dados.interest_rating}");
+            var mustTestTag = dados.must_test ? ObterOuCriarTag(MustTestTag) : null;
+            bool replayValido = !dados.replay_score.HasValue ||
+                (dados.replay_score.Value >= 1 && dados.replay_score.Value <= 5);
+            if (!replayValido)
+                warnings.Add("replay_score fora da escala 1-5");
+            var replayTag = replayValido && dados.replay_score.HasValue
+                ? ObterOuCriarTag($"{ReplayTagPrefix} {dados.replay_score.Value}")
+                : null;
+            bool changed = false;
+
+            foreach (var tag in currentTags)
+            {
+                bool oldInterest = EhTagDeVontadeGerenciada(tag.Name);
+                bool oldReplay = EhTagDeReplayGerenciada(tag.Name);
+                bool mustTest = string.Equals(
+                    tag.Name, MustTestTag, StringComparison.OrdinalIgnoreCase);
+                bool desiredInterest = tag.Id == interestTag.Id;
+                bool desiredReplay = replayTag != null && tag.Id == replayTag.Id;
+                bool desiredMustTest = mustTestTag != null && tag.Id == mustTestTag.Id;
+                if ((oldInterest && !desiredInterest) ||
+                    (oldReplay && replayValido && !desiredReplay) ||
+                    (mustTest && !desiredMustTest))
+                {
+                    currentIds.Remove(tag.Id);
+                    changed = true;
+                }
+            }
+
+            if (!currentIds.Contains(interestTag.Id))
+            {
+                currentIds.Add(interestTag.Id);
+                changed = true;
+            }
+            if (dados.must_test && !currentIds.Contains(mustTestTag.Id))
+            {
+                currentIds.Add(mustTestTag.Id);
+                changed = true;
+            }
+            if (replayTag != null && !currentIds.Contains(replayTag.Id))
+            {
+                currentIds.Add(replayTag.Id);
+                changed = true;
+            }
+            if (changed)
+                jogo.TagIds = currentIds;
+            return changed;
+        }
+
+        private Tag ObterOuCriarTag(string nome)
+        {
+            var tag = PlayniteApi.Database.Tags.FirstOrDefault(t =>
+                string.Equals(t.Name, nome, StringComparison.OrdinalIgnoreCase));
+            if (tag != null)
+                return tag;
+            tag = new Tag(nome);
+            PlayniteApi.Database.Tags.Add(tag);
+            return tag;
+        }
+
+        private static bool EhTagDeVontadeGerenciada(string nome)
+        {
+            if (string.IsNullOrWhiteSpace(nome) ||
+                !nome.StartsWith(InterestTagPrefix, StringComparison.OrdinalIgnoreCase))
+                return false;
+            string raw = nome.Substring(InterestTagPrefix.Length).Trim();
+            return int.TryParse(raw, out int value) && value >= 1 && value <= 5;
+        }
+
+        private static bool EhTagDeReplayGerenciada(string nome)
+        {
+            if (string.IsNullOrWhiteSpace(nome) ||
+                !nome.StartsWith(ReplayTagPrefix, StringComparison.OrdinalIgnoreCase))
+                return false;
+            string raw = nome.Substring(ReplayTagPrefix.Length).Trim();
+            return int.TryParse(raw, out int value) && value >= 1 && value <= 5;
+        }
+
+        private static string[] AliasesStatus(string status)
+        {
+            switch ((status ?? string.Empty).Trim().ToLowerInvariant())
+            {
+                case "backlog":
+                    return new[] { "Backlog", "Not Played", "NotPlayed", "Plan to Play" };
+                case "jogando":
+                case "playing":
+                    return new[] { "Jogando", "Playing" };
+                case "finalizado":
+                case "completed":
+                    return new[] { "Finalizado", "Completed" };
+                case "abandonado":
+                case "abandoned":
+                    return new[] { "Abandonado", "Abandoned" };
+                default:
+                    return new[] { status ?? string.Empty };
+            }
+        }
+
+        private string GerarRelatorioImportacao(
+            PullResponse result, List<PullGameReport> reports,
+            string responseJson, bool logDetalhado)
+        {
+            var log = new StringBuilder();
+            log.AppendLine();
+            log.AppendLine("[RESPOSTA RECEBIDA]");
+            log.AppendLine("---------------------------------------------------------");
+            log.AppendLine("HTTP 200 - consulta concluída.");
+            if (logDetalhado)
+            {
+                log.AppendLine();
+                log.AppendLine("[JSON DE RESPOSTA DO SERVIDOR]");
+                log.AppendLine("---------------------------------------------------------");
+                log.AppendLine(responseJson);
+            }
+
+            log.AppendLine();
+            log.AppendLine("[JOGOS CONSULTADOS]");
+            log.AppendLine("---------------------------------------------------------");
+            foreach (var report in reports)
+            {
+                log.AppendLine($"• {report.Name} " +
+                    (report.Result.Changed ? "[ALTERADO]" : "[NÃO ALTERADO]"));
+                if (logDetalhado && report.Result.ChangedFields.Count > 0)
+                    log.AppendLine($"  Campos: {string.Join(", ", report.Result.ChangedFields)}");
+                foreach (string warning in report.Result.Warnings)
+                    log.AppendLine($"  Aviso: {warning}");
+            }
+
+            var missing = result.missing_playnite_ids ?? new List<string>();
+            if (missing.Count > 0)
+            {
+                log.AppendLine();
+                log.AppendLine($"[NÃO ENCONTRADOS ({missing.Count})]");
+                log.AppendLine("---------------------------------------------------------");
+                foreach (string id in missing)
+                    log.AppendLine($"• {id}");
+            }
+
+            log.AppendLine();
+            log.AppendLine("=========================================================");
+            log.AppendLine(" RESUMO");
+            log.AppendLine($" Alterados:       {reports.Count(r => r.Result.Changed)}");
+            log.AppendLine($" Não alterados:   {reports.Count(r => !r.Result.Changed)}");
+            log.AppendLine($" Não encontrados: {missing.Count}");
+            log.AppendLine("=========================================================");
+            return log.ToString();
+        }
+
+        private string IniciarImportLogTerminal(string json, int total, bool detalhado)
+        {
+            string id = Guid.NewGuid().ToString("N");
+            string pasta = Path.Combine(Path.GetTempPath(), "playnite_sync");
+            Directory.CreateDirectory(pasta);
+            string inicio = Path.Combine(pasta, $"pull_{id}_inicio.txt");
+            string resultado = Path.Combine(pasta, $"pull_{id}_resultado.txt");
+            string batPath = Path.Combine(pasta, $"pull_{id}.bat");
+
+            var inicial = new StringBuilder();
+            inicial.AppendLine("=========================================================");
+            inicial.AppendLine(" PLAYNITE PULL");
+            inicial.AppendLine($" DESTINO: {PullServerUrl}");
+            inicial.AppendLine($" TOTAL CONSULTADO: {total}");
+            inicial.AppendLine($" LOG DETALHADO: {detalhado}");
+            inicial.AppendLine("=========================================================");
+            inicial.AppendLine();
+            inicial.AppendLine("Consultando jogos no servidor...");
+            if (detalhado)
+            {
+                inicial.AppendLine();
+                inicial.AppendLine("[JSON ENVIADO]");
+                inicial.AppendLine("---------------------------------------------------------");
+                inicial.AppendLine(json);
+            }
+            File.WriteAllText(inicio, inicial.ToString(), Encoding.UTF8);
+
+            var bat = new StringBuilder();
+            bat.AppendLine("@echo off");
+            bat.AppendLine("chcp 65001 > nul");
+            bat.AppendLine($"title Playnite Pull - {total} jogos");
+            bat.AppendLine($"type \"{inicio}\"");
+            bat.AppendLine(":aguardar_resultado");
+            bat.AppendLine($"if not exist \"{resultado}\" (");
+            bat.AppendLine("  timeout /t 1 /nobreak > nul");
+            bat.AppendLine("  goto aguardar_resultado");
+            bat.AppendLine(")");
+            bat.AppendLine($"type \"{resultado}\"");
+            bat.AppendLine("echo.");
+            bat.AppendLine("echo Pressione qualquer tecla para fechar...");
+            bat.AppendLine("pause > nul");
+            bat.AppendLine($"del /q \"{inicio}\" > nul 2>&1");
+            bat.AppendLine($"del /q \"{resultado}\" > nul 2>&1");
+            bat.AppendLine($"del /q \"{batPath}\" > nul 2>&1");
+            File.WriteAllText(batPath, bat.ToString(), Encoding.UTF8);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = batPath,
+                UseShellExecute = true
+            });
+            return resultado;
+        }
     }
 }

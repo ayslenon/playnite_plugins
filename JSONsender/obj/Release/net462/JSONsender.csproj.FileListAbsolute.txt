@@ -1,0 +1,11 @@
+C:\Users\Console\Downloads\JSONsender\bin\Release\net462\JSONsender.dll
+C:\Users\Console\Downloads\JSONsender\bin\Release\net462\JSONsender.pdb
+C:\Users\Console\Downloads\JSONsender\bin\Release\net462\Playnite.SDK.dll
+C:\Users\Console\Downloads\JSONsender\obj\Release\net462\JSONsender.csproj.AssemblyReference.cache
+C:\Users\Console\Downloads\JSONsender\obj\Release\net462\JSONsender.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Console\Downloads\JSONsender\obj\Release\net462\JSONsender.AssemblyInfoInputs.cache
+C:\Users\Console\Downloads\JSONsender\obj\Release\net462\JSONsender.AssemblyInfo.cs
+C:\Users\Console\Downloads\JSONsender\obj\Release\net462\JSONsender.csproj.CoreCompileInputs.cache
+C:\Users\Console\Downloads\JSONsender\obj\Release\net462\JSONsender.csproj.Up2Date
+C:\Users\Console\Downloads\JSONsender\obj\Release\net462\JSONsender.dll
+C:\Users\Console\Downloads\JSONsender\obj\Release\net462\JSONsender.pdb
