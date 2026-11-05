@@ -613,7 +613,7 @@ namespace SyncServerPlaynite
             public bool must_test { get; set; }
             public int interest_rating { get; set; }
             public int? replay_score { get; set; }
-            public string score { get; set; }
+            public decimal? score { get; set; }
             public string updated_at { get; set; }
         }
 
@@ -805,9 +805,9 @@ namespace SyncServerPlaynite
 
         private bool AplicarUserScore(Game jogo, PullGameDTO dados, List<string> warnings)
         {
-            // A nota pessoal vem de score no formato x/10. replay_score representa
+            // A nota pessoal vem em escala 0–10. replay_score representa
             // apenas a vontade de rejogar e é aplicado como tag gerenciada.
-            if (string.IsNullOrWhiteSpace(dados.score))
+            if (!dados.score.HasValue)
                 return false;
 
             if (!TentarConverterScore(dados.score, out int desired))
@@ -823,21 +823,14 @@ namespace SyncServerPlaynite
             return true;
         }
 
-        private static bool TentarConverterScore(string score, out int userScore)
+        private static bool TentarConverterScore(decimal? score, out int userScore)
         {
             userScore = 0;
-            string[] parts = (score ?? string.Empty).Trim().Replace(',', '.').Split('/');
-            if (parts.Length != 2 ||
-                !string.Equals(parts[1].Trim(), "10", StringComparison.Ordinal))
-                return false;
-
-            if (!decimal.TryParse(parts[0].Trim(), NumberStyles.AllowDecimalPoint,
-                    CultureInfo.InvariantCulture, out decimal value) ||
-                value < 0 || value > 10)
+            if (!score.HasValue || score.Value < 0 || score.Value > 10)
                 return false;
 
             userScore = (int)Math.Round(
-                value * 10m, MidpointRounding.AwayFromZero);
+                score.Value * 10m, MidpointRounding.AwayFromZero);
             return true;
         }
 
