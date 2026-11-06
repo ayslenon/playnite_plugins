@@ -168,26 +168,35 @@ namespace SyncServerPlaynite
 
             var opLogDetalhado = new MessageBoxOption("Sim (Exibir JSON)");
             var opLogSimples = new MessageBoxOption("Não (Log Resumido)");
+            var opSemLog = new MessageBoxOption("Nenhum (Sem terminal)");
             var opCancelarLog = new MessageBoxOption("Cancelar", true, false);
 
             var escolhaLog = PlayniteApi.Dialogs.ShowMessage(
-                "Deseja exibir o log detalhado do envio?\n\n" +
+                "Escolha como acompanhar o envio:\n\n" +
                 "• [SIM] Exibe no terminal o JSON completo enviado ao servidor.\n" +
-                "• [NÃO] Exibe apenas informações resumidas do batch.",
+                "• [NÃO] Exibe no terminal apenas o resumo do batch.\n" +
+                "• [NENHUM] Não abre terminal; informa o resultado no Playnite.",
                 "Nível de Log",
                 MessageBoxImage.Question,
-                new List<MessageBoxOption> { opLogDetalhado, opLogSimples, opCancelarLog }
+                new List<MessageBoxOption>
+                {
+                    opLogDetalhado, opLogSimples, opSemLog, opCancelarLog
+                }
             );
 
             if (escolhaLog == opCancelarLog || escolhaLog == null) return;
 
             bool logDetalhado = (escolhaLog == opLogDetalhado);
+            bool abrirTerminal = (escolhaLog != opSemLog);
 
             // Dispara o envio assíncrono para não travar a interface do Playnite
-            Task.Run(() => ProcessarEnvioBatchAsync(jogos, incluirInstalacao, logDetalhado));
+            Task.Run(() => ProcessarEnvioBatchAsync(
+                jogos, incluirInstalacao, abrirTerminal, logDetalhado));
         }
 
-        private async Task ProcessarEnvioBatchAsync(List<Game> jogos, bool incluirInstalacao, bool logDetalhado)
+        private async Task ProcessarEnvioBatchAsync(
+            List<Game> jogos, bool incluirInstalacao,
+            bool abrirTerminal, bool logDetalhado)
         {
             string arquivoResultadoTerminal = null;
 
@@ -198,10 +207,13 @@ namespace SyncServerPlaynite
                 var payload = new SyncPayload { games = dtos };
                 string jsonBody = Serialization.ToJson(payload, true);
 
-                // Abre o terminal imediatamente. O relatório final será escrito nele
-                // quando a resposta do servidor chegar.
-                arquivoResultadoTerminal = IniciarLogTerminal(
-                    jsonBody, jogos.Count, incluirInstalacao, logDetalhado);
+                if (abrirTerminal)
+                {
+                    // Abre o terminal imediatamente. O relatório final será escrito
+                    // nele quando a resposta do servidor chegar.
+                    arquivoResultadoTerminal = IniciarLogTerminal(
+                        jsonBody, jogos.Count, incluirInstalacao, logDetalhado);
+                }
 
                 // Envio HTTP POST
                 var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
@@ -214,12 +226,17 @@ namespace SyncServerPlaynite
                     // Faz a leitura da resposta JSON do backend
                     var syncResult = Serialization.FromJson<SyncResponse>(responseText);
 
-                    // Relatório completo fica no terminal.
-                    string relatorioTerminal = GerarRelatorioTerminal(syncResult, dtos, responseText, logDetalhado);
-                    File.WriteAllText(arquivoResultadoTerminal, relatorioTerminal, Encoding.UTF8);
+                    if (abrirTerminal)
+                    {
+                        string relatorioTerminal = GerarRelatorioTerminal(
+                            syncResult, dtos, responseText, logDetalhado);
+                        File.WriteAllText(
+                            arquivoResultadoTerminal, relatorioTerminal, Encoding.UTF8);
+                    }
 
                     // Popup do Playnite fica propositalmente curto.
-                    string mensagemSucesso = GerarResumoPopup(syncResult, jogos.Count);
+                    string mensagemSucesso = GerarResumoPopup(
+                        syncResult, jogos.Count, abrirTerminal);
 
                     PlayniteApi.Dialogs.ShowMessage(
                         mensagemSucesso,
@@ -230,10 +247,13 @@ namespace SyncServerPlaynite
                 }
                 else
                 {
-                    File.WriteAllText(
-                        arquivoResultadoTerminal,
-                        GerarErroTerminal((int)response.StatusCode, responseText),
-                        Encoding.UTF8);
+                    if (abrirTerminal)
+                    {
+                        File.WriteAllText(
+                            arquivoResultadoTerminal,
+                            GerarErroTerminal((int)response.StatusCode, responseText),
+                            Encoding.UTF8);
+                    }
 
                     PlayniteApi.Dialogs.ShowErrorMessage(
                         $"Erro no servidor (Status {(int)response.StatusCode}):\n{responseText}",
@@ -319,7 +339,10 @@ namespace SyncServerPlaynite
             if (string.IsNullOrWhiteSpace(playniteId) || string.IsNullOrWhiteSpace(caminho))
                 return null;
 
-            string normalizado = caminho.Trim().Replace('\\', '/').TrimEnd('/');
+            // Use explicitamente o overload antigo (char[]) porque o Playnite carrega
+            // extensoes no .NET Framework 4.6.2. O overload TrimEnd(char), escolhido
+            // por compiladores/runtimes mais novos, causa MissingMethodException.
+            string normalizado = caminho.Trim().Replace('\\', '/').TrimEnd(new[] { '/' });
             int ultimoSeparador = normalizado.LastIndexOf('/');
             string nomeArquivo = ultimoSeparador >= 0
                 ? normalizado.Substring(ultimoSeparador + 1)
@@ -331,7 +354,8 @@ namespace SyncServerPlaynite
             return $"/api/covers/playnite/{playniteId}/{nomeArquivo}";
         }
 
-        private string GerarResumoPopup(SyncResponse syncResult, int totalEnviado)
+        private string GerarResumoPopup(
+            SyncResponse syncResult, int totalEnviado, bool terminalAberto)
         {
             int processados = syncResult?.processed ?? 0;
             int pulados = syncResult?.skipped ?? 0;
@@ -339,8 +363,10 @@ namespace SyncServerPlaynite
             return "Sincronização concluída!\n\n" +
                    $"• Enviados: {totalEnviado}\n" +
                    $"• Processados: {processados}\n" +
-                   $"• Pulados: {pulados}\n\n" +
-                   "Consulte o terminal para o relatório detalhado.";
+                   $"• Pulados: {pulados}" +
+                   (terminalAberto
+                       ? "\n\nConsulte o terminal para o relatório."
+                       : string.Empty);
         }
 
         private string GerarRelatorioTerminal(
@@ -618,6 +644,7 @@ namespace SyncServerPlaynite
             public string coop_players { get; set; }
             public List<string> coop_type { get; set; }
             public string coop_screen_type { get; set; }
+            public List<string> multiplayer_mode { get; set; }
             public string input_recommendation { get; set; }
             public string updated_at { get; set; }
         }
@@ -646,21 +673,27 @@ namespace SyncServerPlaynite
 
             var detalhado = new MessageBoxOption("Sim (Exibir alterações)");
             var resumido = new MessageBoxOption("Não (Resumo)");
+            var semLog = new MessageBoxOption("Nenhum (Sem terminal)");
             var cancelar = new MessageBoxOption("Cancelar", true, false);
             var escolha = PlayniteApi.Dialogs.ShowMessage(
                 $"Você está prestes a consultar {jogos.Count} jogo(s) no servidor.\n\n" +
-                "Deseja exibir o relatório detalhado das alterações?",
+                "Escolha como acompanhar o downlink:\n\n" +
+                "• [SIM] Exibe as alterações detalhadas no terminal.\n" +
+                "• [NÃO] Exibe um resumo no terminal.\n" +
+                "• [NENHUM] Não abre terminal; informa o resultado no Playnite.",
                 "Confirmar Downlink",
                 MessageBoxImage.Question,
-                new List<MessageBoxOption> { detalhado, resumido, cancelar });
+                new List<MessageBoxOption> { detalhado, resumido, semLog, cancelar });
 
             if (escolha == cancelar || escolha == null)
                 return;
 
-            Task.Run(() => ProcessarImportacaoAsync(jogos, escolha == detalhado));
+            Task.Run(() => ProcessarImportacaoAsync(
+                jogos, escolha != semLog, escolha == detalhado));
         }
 
-        private async Task ProcessarImportacaoAsync(List<Game> jogos, bool logDetalhado)
+        private async Task ProcessarImportacaoAsync(
+            List<Game> jogos, bool abrirTerminal, bool logDetalhado)
         {
             string arquivoResultadoTerminal = null;
             try
@@ -671,16 +704,23 @@ namespace SyncServerPlaynite
                     .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                 var payload = new PullRequest { playnite_ids = ids };
                 string jsonBody = Serialization.ToJson(payload, true);
-                arquivoResultadoTerminal = IniciarImportLogTerminal(
-                    jsonBody, ids.Count, logDetalhado);
+                if (abrirTerminal)
+                {
+                    arquivoResultadoTerminal = IniciarImportLogTerminal(
+                        jsonBody, ids.Count, logDetalhado);
+                }
 
                 var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
                 var response = await pullHttpClient.PostAsync(PullServerUrl, content);
                 string responseText = await response.Content.ReadAsStringAsync();
                 if (!response.IsSuccessStatusCode)
                 {
-                    File.WriteAllText(arquivoResultadoTerminal,
-                        GerarErroTerminal((int)response.StatusCode, responseText), Encoding.UTF8);
+                    if (abrirTerminal)
+                    {
+                        File.WriteAllText(arquivoResultadoTerminal,
+                            GerarErroTerminal((int)response.StatusCode, responseText),
+                            Encoding.UTF8);
+                    }
                     PlayniteApi.Dialogs.ShowErrorMessage(
                         $"Erro no servidor (Status {(int)response.StatusCode}):\n{responseText}",
                         "Erro de Downlink");
@@ -711,16 +751,22 @@ namespace SyncServerPlaynite
                 int alterados = reports.Count(r => r.Result.Changed);
                 int naoAlterados = reports.Count(r => !r.Result.Changed);
                 int naoEncontrados = result.missing_playnite_ids?.Count ?? 0;
-                File.WriteAllText(arquivoResultadoTerminal,
-                    GerarRelatorioImportacao(result, reports, responseText, logDetalhado),
-                    Encoding.UTF8);
+                if (abrirTerminal)
+                {
+                    File.WriteAllText(arquivoResultadoTerminal,
+                        GerarRelatorioImportacao(
+                            result, reports, responseText, logDetalhado),
+                        Encoding.UTF8);
+                }
 
                 PlayniteApi.Dialogs.ShowMessage(
                     "Downlink concluído!\n\n" +
                     $"• Alterados: {alterados}\n" +
                     $"• Não alterados: {naoAlterados}\n" +
-                    $"• Não encontrados: {naoEncontrados}\n\n" +
-                    "Consulte o terminal para o relatório detalhado.",
+                    $"• Não encontrados: {naoEncontrados}" +
+                    (abrirTerminal
+                        ? "\n\nConsulte o terminal para o relatório."
+                        : string.Empty),
                     "Resultado do Downlink", MessageBoxButton.OK,
                     MessageBoxImage.Information);
             }
@@ -784,10 +830,19 @@ namespace SyncServerPlaynite
             nomes.Add($"[Servidor] Jogadores: {dados.coop_players}");
             nomes.Add($"[Servidor] Tela: {dados.coop_screen_type}");
             nomes.Add($"[Servidor] Input: {dados.input_recommendation}");
+            // Servidores antigos não enviam modos: preserve as tags existentes.
+            if (dados.multiplayer_mode != null)
+            {
+                nomes.AddRange(dados.multiplayer_mode.Count == 0
+                    ? new List<string> { "[Servidor] Modo: Nenhum" }
+                    : dados.multiplayer_mode.Select(v => $"[Servidor] Modo: {v}"));
+            }
             var desired = nomes.Select(ObterOuCriarTag).Select(t => t.Id).Distinct().ToList();
             var ids = new List<Guid>(jogo.TagIds ?? new List<Guid>());
             string[] prefixos = { "[Servidor] Coop:", "[Servidor] Jogadores:",
                 "[Servidor] Tela:", "[Servidor] Input:" };
+            if (dados.multiplayer_mode != null)
+                prefixos = prefixos.Concat(new[] { "[Servidor] Modo:" }).ToArray();
             var antigos = PlayniteApi.Database.Tags.Where(t => ids.Contains(t.Id) &&
                 prefixos.Any(p => (t.Name ?? "").StartsWith(p, StringComparison.OrdinalIgnoreCase)))
                 .Select(t => t.Id).ToList();
