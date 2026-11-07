@@ -76,6 +76,49 @@ namespace SyncServerPlaynite
             };
         }
 
+        public override void OnApplicationStarted(
+            Playnite.SDK.Events.OnApplicationStartedEventArgs args)
+        {
+            base.OnApplicationStarted(args);
+            MigrarTagsObsoletas();
+        }
+
+        private void MigrarTagsObsoletas()
+        {
+            try
+            {
+                var obsoletas = PlayniteApi.Database.Tags.Where(tag =>
+                    (tag.Name ?? string.Empty).StartsWith(
+                        "[Vontade de Rejogar]", StringComparison.OrdinalIgnoreCase) ||
+                    (tag.Name ?? string.Empty).StartsWith(
+                        "[Servidor] Tela:", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (obsoletas.Count == 0)
+                    return;
+
+                var idsObsoletos = new HashSet<Guid>(obsoletas.Select(tag => tag.Id));
+                using (PlayniteApi.Database.BufferedUpdate())
+                {
+                    foreach (var jogo in PlayniteApi.Database.Games.Where(game =>
+                        (game.TagIds ?? new List<Guid>()).Any(idsObsoletos.Contains)).ToList())
+                    {
+                        jogo.TagIds = (jogo.TagIds ?? new List<Guid>())
+                            .Where(id => !idsObsoletos.Contains(id)).ToList();
+                        PlayniteApi.Database.Games.Update(jogo);
+                    }
+
+                    foreach (var tag in obsoletas)
+                        PlayniteApi.Database.Tags.Remove(tag.Id);
+                }
+            }
+            catch (Exception ex)
+            {
+                PlayniteApi.Dialogs.ShowErrorMessage(
+                    $"Não foi possível remover as tags obsoletas:\n{ex.Message}",
+                    "Migração do Sync Dashboard");
+            }
+        }
+
         // 1. MENU DO BOTÃO DIREITO NO JOGO
         public override IEnumerable<GameMenuItem> GetGameMenuItems(GetGameMenuItemsArgs args)
         {
@@ -613,7 +656,6 @@ namespace SyncServerPlaynite
         private const string PullServerUrl = "https://localhost:8000/api/sync/playnite/pull";
         private const string MustTestTag = "[Servidor] Precisa Testar";
         private const string InterestTagPrefix = "[Vontade de Jogar]";
-        private const string ReplayTagPrefix = "[Vontade de Rejogar]";
         private static readonly HttpClient pullHttpClient = new HttpClient();
 
         public class PullRequest
@@ -638,12 +680,10 @@ namespace SyncServerPlaynite
             public bool favorite { get; set; }
             public bool must_test { get; set; }
             public int interest_rating { get; set; }
-            public int? replay_score { get; set; }
             public decimal? score { get; set; }
             public string notes { get; set; }
             public string coop_players { get; set; }
             public List<string> coop_type { get; set; }
-            public string coop_screen_type { get; set; }
             public List<string> multiplayer_mode { get; set; }
             public string input_recommendation { get; set; }
             public string updated_at { get; set; }
@@ -821,27 +861,30 @@ namespace SyncServerPlaynite
         {
             // Um servidor antigo não envia estes campos; preserve as tags existentes.
             if (dados.coop_type == null || dados.coop_players == null ||
-                dados.coop_screen_type == null || dados.input_recommendation == null)
+                dados.input_recommendation == null)
                 return false;
 
-            var nomes = dados.coop_type.Count == 0
+            bool singlePlayer = string.Equals(dados.coop_players, "1 Jogador",
+                StringComparison.OrdinalIgnoreCase);
+            var coopTypes = singlePlayer ? new List<string>() : dados.coop_type;
+            var nomes = coopTypes.Count == 0
                 ? new List<string> { "[Servidor] Coop: Nenhum" }
-                : dados.coop_type.Select(v => $"[Servidor] Coop: {v}").ToList();
+                : coopTypes.Select(v => $"[Servidor] Coop: {v}").ToList();
             nomes.Add($"[Servidor] Jogadores: {dados.coop_players}");
-            nomes.Add($"[Servidor] Tela: {dados.coop_screen_type}");
             nomes.Add($"[Servidor] Input: {dados.input_recommendation}");
             // Servidores antigos não enviam modos: preserve as tags existentes.
-            if (dados.multiplayer_mode != null)
+            if (singlePlayer || dados.multiplayer_mode != null)
             {
-                nomes.AddRange(dados.multiplayer_mode.Count == 0
+                var modes = singlePlayer ? new List<string>() : dados.multiplayer_mode;
+                nomes.AddRange(modes.Count == 0
                     ? new List<string> { "[Servidor] Modo: Nenhum" }
-                    : dados.multiplayer_mode.Select(v => $"[Servidor] Modo: {v}"));
+                    : modes.Select(v => $"[Servidor] Modo: {v}"));
             }
             var desired = nomes.Select(ObterOuCriarTag).Select(t => t.Id).Distinct().ToList();
             var ids = new List<Guid>(jogo.TagIds ?? new List<Guid>());
             string[] prefixos = { "[Servidor] Coop:", "[Servidor] Jogadores:",
-                "[Servidor] Tela:", "[Servidor] Input:" };
-            if (dados.multiplayer_mode != null)
+                "[Servidor] Input:" };
+            if (singlePlayer || dados.multiplayer_mode != null)
                 prefixos = prefixos.Concat(new[] { "[Servidor] Modo:" }).ToArray();
             var antigos = PlayniteApi.Database.Tags.Where(t => ids.Contains(t.Id) &&
                 prefixos.Any(p => (t.Name ?? "").StartsWith(p, StringComparison.OrdinalIgnoreCase)))
@@ -899,8 +942,7 @@ namespace SyncServerPlaynite
 
         private bool AplicarUserScore(Game jogo, PullGameDTO dados, List<string> warnings)
         {
-            // A nota pessoal vem em escala 0–10. replay_score representa
-            // apenas a vontade de rejogar e é aplicado como tag gerenciada.
+            // A nota pessoal vem em escala 0–10.
             if (!dados.score.HasValue)
                 return false;
 
@@ -943,26 +985,16 @@ namespace SyncServerPlaynite
             var interestTag = ObterOuCriarTag(
                 $"{InterestTagPrefix} {dados.interest_rating}");
             var mustTestTag = dados.must_test ? ObterOuCriarTag(MustTestTag) : null;
-            bool replayValido = !dados.replay_score.HasValue ||
-                (dados.replay_score.Value >= 1 && dados.replay_score.Value <= 5);
-            if (!replayValido)
-                warnings.Add("replay_score fora da escala 1-5");
-            var replayTag = replayValido && dados.replay_score.HasValue
-                ? ObterOuCriarTag($"{ReplayTagPrefix} {dados.replay_score.Value}")
-                : null;
             bool changed = false;
 
             foreach (var tag in currentTags)
             {
                 bool oldInterest = EhTagDeVontadeGerenciada(tag.Name);
-                bool oldReplay = EhTagDeReplayGerenciada(tag.Name);
                 bool mustTest = string.Equals(
                     tag.Name, MustTestTag, StringComparison.OrdinalIgnoreCase);
                 bool desiredInterest = tag.Id == interestTag.Id;
-                bool desiredReplay = replayTag != null && tag.Id == replayTag.Id;
                 bool desiredMustTest = mustTestTag != null && tag.Id == mustTestTag.Id;
                 if ((oldInterest && !desiredInterest) ||
-                    (oldReplay && replayValido && !desiredReplay) ||
                     (mustTest && !desiredMustTest))
                 {
                     currentIds.Remove(tag.Id);
@@ -978,11 +1010,6 @@ namespace SyncServerPlaynite
             if (dados.must_test && !currentIds.Contains(mustTestTag.Id))
             {
                 currentIds.Add(mustTestTag.Id);
-                changed = true;
-            }
-            if (replayTag != null && !currentIds.Contains(replayTag.Id))
-            {
-                currentIds.Add(replayTag.Id);
                 changed = true;
             }
             if (changed)
@@ -1007,15 +1034,6 @@ namespace SyncServerPlaynite
                 !nome.StartsWith(InterestTagPrefix, StringComparison.OrdinalIgnoreCase))
                 return false;
             string raw = nome.Substring(InterestTagPrefix.Length).Trim();
-            return int.TryParse(raw, out int value) && value >= 1 && value <= 5;
-        }
-
-        private static bool EhTagDeReplayGerenciada(string nome)
-        {
-            if (string.IsNullOrWhiteSpace(nome) ||
-                !nome.StartsWith(ReplayTagPrefix, StringComparison.OrdinalIgnoreCase))
-                return false;
-            string raw = nome.Substring(ReplayTagPrefix.Length).Trim();
             return int.TryParse(raw, out int value) && value >= 1 && value <= 5;
         }
 

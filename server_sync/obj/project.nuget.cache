@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "0tnyjfqKjVo=",
+  "dgSpecHash": "KkdMTale5h4=",
   "success": true,
-  "projectFilePath": "C:\\GameLibraryData\\playnite\\plugins\\server_sync\\server_sync.csproj",
+  "projectFilePath": "C:\\Users\\Console\\Downloads\\integração_playnite\\playnite_plugins\\server_sync\\server_sync.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\Console\\.nuget\\packages\\microsoft.netframework.referenceassemblies\\1.0.3\\microsoft.netframework.referenceassemblies.1.0.3.nupkg.sha512",
     "C:\\Users\\Console\\.nuget\\packages\\microsoft.netframework.referenceassemblies.net462\\1.0.3\\microsoft.netframework.referenceassemblies.net462.1.0.3.nupkg.sha512",
@@ -13,5 +13,12 @@
     "C:\\Users\\Console\\.nuget\\packages\\system.security.cryptography.primitives\\4.3.0\\system.security.cryptography.primitives.4.3.0.nupkg.sha512",
     "C:\\Users\\Console\\.nuget\\packages\\system.security.cryptography.x509certificates\\4.3.0\\system.security.cryptography.x509certificates.4.3.0.nupkg.sha512"
   ],
-  "logs": []
+  "logs": [
+    {
+      "code": "NU1900",
+      "level": "Warning",
+      "warningLevel": 1,
+      "message": "Ocorreu um erro ao obter os dados de vulnerabilidade do pacote: Não é possível carregar o índice de serviço para a origem https://api.nuget.org/v3/index.json."
+    }
+  ]
 }

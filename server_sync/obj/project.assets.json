@@ -726,11 +726,11 @@
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "C:\\GameLibraryData\\playnite\\plugins\\server_sync\\server_sync.csproj",
+      "projectUniqueName": "C:\\Users\\Console\\Downloads\\integração_playnite\\playnite_plugins\\server_sync\\server_sync.csproj",
       "projectName": "server_sync",
-      "projectPath": "C:\\GameLibraryData\\playnite\\plugins\\server_sync\\server_sync.csproj",
+      "projectPath": "C:\\Users\\Console\\Downloads\\integração_playnite\\playnite_plugins\\server_sync\\server_sync.csproj",
       "packagesPath": "C:\\Users\\Console\\.nuget\\packages\\",
-      "outputPath": "C:\\GameLibraryData\\playnite\\plugins\\server_sync\\obj\\",
+      "outputPath": "C:\\Users\\Console\\Downloads\\integração_playnite\\playnite_plugins\\server_sync\\obj\\",
       "projectStyle": "PackageReference",
       "configFilePaths": [
         "C:\\Users\\Console\\AppData\\Roaming\\NuGet\\NuGet.Config"
@@ -780,5 +780,13 @@
         "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.423\\RuntimeIdentifierGraph.json"
       }
     }
-  }
+  },
+  "logs": [
+    {
+      "code": "NU1900",
+      "level": "Warning",
+      "warningLevel": 1,
+      "message": "Ocorreu um erro ao obter os dados de vulnerabilidade do pacote: Não é possível carregar o índice de serviço para a origem https://api.nuget.org/v3/index.json."
+    }
+  ]
 }
